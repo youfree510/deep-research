@@ -58,7 +58,6 @@ function useDeepResearch() {
   const taskStore = useTaskStore();
   const { smoothTextStreamType } = useSettingStore();
   const { createModelProvider, getModel } = useModelProvider();
-  const createProvider = createModelProvider;
   const { search } = useWebSearch();
   const [status, setStatus] = useState<string>("");
 
@@ -438,31 +437,45 @@ function useDeepResearch() {
   }
 
   async function runScrapingPipeline(topic: string) {
-    setStatus(t("research.common.thinking"));
-    const { thinkingModel, networkingModel } = getModel();
+    // Инициализируем хуки и хранилища здесь, чтобы обеспечить правильный контекст
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+    const { createModelProvider, getModel } = useModelProvider();
+    const createProvider = createModelProvider;
     const {
       update,
       setQuestion,
       updateFinalReport,
       setTitle,
       setSources,
+      updateTask,
     } = useTaskStore.getState();
 
+    setStatus(t("research.common.thinking"));
+
+    // Определяем модели заранее
+    const { thinkingModel, networkingModel } = getModel();
+    const thinkingModelInstance = createProvider(thinkingModel);
+    const networkingModelInstance = createProvider(networkingModel, {
+      useSearchGrounding: true,
+    });
+
+    // Сбрасываем предыдущие результаты
     update([]);
     setTitle(`Scraping reviews for: ${topic}`);
     setQuestion(topic);
     updateFinalReport("Stage 1: Generating search queries...");
 
     try {
+      // --- ЭТАП 1: ГЕНЕРАЦИЯ ПОИСКОВЫХ ЗАПРОСОВ ---
       const queryGenerationResult = await streamText({
-        model: createProvider(thinkingModel),
+        model: thinkingModelInstance,
         prompt: generateScraperQueriesPrompt(topic),
       });
 
       const queriesText = await queryGenerationResult.text;
       const searchQueries = queriesText
-        .split("\n")
-        .filter((q) => q.trim() !== "");
+        .split('\n')
+        .filter((q) => q.trim() !== '');
 
       if (searchQueries.length === 0) {
         throw new Error("Failed to generate search queries.");
@@ -470,71 +483,75 @@ function useDeepResearch() {
 
       const searchTasks: SearchTask[] = searchQueries.map((q) => ({
         query: q,
-        state: "unprocessed",
-        learning: "Waiting for search...",
+        state: 'unprocessed',
+        learning: 'Waiting for search...',
         researchGoal: `Find pages with negative reviews for ${topic}.`,
         sources: [],
       }));
       update(searchTasks);
 
+      // --- ЭТАП 2: ПОИСК И СБОР ИНФОРМАЦИИ ---
       setStatus(t("research.common.research"));
       updateFinalReport("Stage 2: Searching Google and processing pages...");
 
-      const searchToolEnabledModel = createProvider(networkingModel, {
-        useSearchGrounding: true,
-      });
-
-      let allReviews: any[] = [];
+      const allReviews: any[] = [];
       const plimit = Plimit(3);
 
       const processingPromises = searchTasks.map((task) =>
         plimit(async () => {
-          taskStore.updateTask(task.query, { state: "processing" });
+          updateTask(task.query, { state: 'processing' });
 
-          const extractionResult = await streamText({
-            model: searchToolEnabledModel,
-            prompt: extractReviewsPrompt(
-              task.query,
-              `Search results for the query: "${task.query}"`
-            ),
+          // Вместо поиска по страницам, мы будем использовать встроенный в Gemini поиск
+          // по каждому сгенерированному запросу для извлечения информации.
+          const contentExtractionPrompt = `Using Google search, find information for the query "${task.query}" and then provide a summary of the findings.`;
+
+          const searchResult = await streamText({
+            model: networkingModelInstance,
+            prompt: contentExtractionPrompt,
           });
 
+          // Сохраняем источники
           const sources: Source[] = [];
-          for await (const part of extractionResult.fullStream) {
-            if (part.type === "source") {
+          let fullContent = '';
+          for await (const part of searchResult.fullStream) {
+            if (part.type === 'text-delta') {
+              fullContent += part.textDelta;
+            }
+            if (part.type === 'source') {
               sources.push(part.source);
             }
           }
 
-          const jsonText = await extractionResult.text;
+          // Теперь извлекаем JSON из найденного контента
+          const jsonExtractionResult = await streamText({
+            model: thinkingModelInstance,
+            prompt: extractReviewsPrompt(topic, fullContent),
+          });
+
+          const jsonText = await jsonExtractionResult.text;
+
           try {
             const extractedData = JSON.parse(jsonText.trim());
             if (extractedData.reviews && extractedData.reviews.length > 0) {
-              allReviews = allReviews.concat(extractedData.reviews);
-              taskStore.updateTask(task.query, {
-                state: "completed",
+              allReviews.push(...extractedData.reviews);
+              updateTask(task.query, {
+                state: 'completed',
                 learning: `Extracted ${extractedData.reviews.length} reviews.`,
-                sources,
+                sources: sources,
               });
             } else {
-              taskStore.updateTask(task.query, {
-                state: "completed",
-                learning: "No negative reviews found.",
-                sources,
-              });
+              updateTask(task.query, { state: 'completed', learning: 'No negative reviews found.', sources: sources });
             }
           } catch {
             console.error("JSON Parse Error for query:", task.query, jsonText);
-            taskStore.updateTask(task.query, {
-              state: "completed",
-              learning: "Failed to parse JSON response.",
-            });
+            updateTask(task.query, { state: 'completed', learning: 'Failed to parse JSON response.' });
           }
         })
       );
 
       await Promise.all(processingPromises);
 
+      // --- ЭТАП 3: ФОРМИРОВАНИЕ ИТОГОВОГО ОТЧЕТА ---
       setStatus(t("research.common.writing"));
       updateFinalReport("Stage 3: Aggregating results...");
 
@@ -547,8 +564,10 @@ function useDeepResearch() {
       const finalJsonString = JSON.stringify(finalResult, null, 2);
       updateFinalReport(finalJsonString);
 
-      setSources(searchTasks.flatMap((task) => task.sources));
+      const allSources = searchTasks.reduce((acc, task) => acc.concat(task.sources || []), [] as Source[]);
+      setSources(allSources);
       setStatus("Completed");
+
     } catch (error) {
       handleError(error);
       setStatus("Error");
