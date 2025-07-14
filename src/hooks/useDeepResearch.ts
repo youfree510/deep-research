@@ -58,6 +58,7 @@ function useDeepResearch() {
   const taskStore = useTaskStore();
   const { smoothTextStreamType } = useSettingStore();
   const { createModelProvider, getModel } = useModelProvider();
+  const createProvider = createModelProvider;
   const { search } = useWebSearch();
   const [status, setStatus] = useState<string>("");
 
@@ -454,7 +455,7 @@ function useDeepResearch() {
 
     try {
       const queryGenerationResult = await streamText({
-        model: createModelProvider(thinkingModel),
+        model: createProvider(thinkingModel),
         prompt: generateScraperQueriesPrompt(topic),
       });
 
@@ -479,7 +480,7 @@ function useDeepResearch() {
       setStatus(t("research.common.research"));
       updateFinalReport("Stage 2: Searching Google and processing pages...");
 
-      const searchToolEnabledModel = createModelProvider(networkingModel, {
+      const searchToolEnabledModel = createProvider(networkingModel, {
         useSearchGrounding: true,
       });
 
