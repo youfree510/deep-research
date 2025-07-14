@@ -454,8 +454,8 @@ function useDeepResearch() {
 
     // Определяем модели заранее
     const { thinkingModel, networkingModel } = getModel();
-    const thinkingModelInstance = createProvider(thinkingModel);
-    const networkingModelInstance = createProvider(networkingModel, {
+    const thinkingModelInstance = await createProvider(thinkingModel);
+    const networkingModelInstance = await createProvider(networkingModel, {
       useSearchGrounding: true,
     });
 
@@ -487,6 +487,7 @@ function useDeepResearch() {
         learning: 'Waiting for search...',
         researchGoal: `Find pages with negative reviews for ${topic}.`,
         sources: [],
+        images: [],
       }));
       update(searchTasks);
 
