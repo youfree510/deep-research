@@ -46,7 +46,7 @@ function Topic() {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const taskStore = useTaskStore();
-  const { askQuestions } = useDeepResearch();
+  const { runScrapingPipeline } = useDeepResearch();
   const { hasApiKey } = useAiProvider();
   const { getKnowledgeFromFile } = useKnowledge();
   const {
@@ -76,21 +76,22 @@ function Topic() {
   }
 
   async function handleSubmit(values: z.infer<typeof formSchema>) {
-    if (handleCheck()) {
-      const { id, setQuestion } = useTaskStore.getState();
+    const { mode } = useSettingStore.getState();
+    if ((mode === "local" && hasApiKey()) || mode === "proxy") {
+      const { id } = useTaskStore.getState();
       try {
         setIsThinking(true);
         accurateTimerStart();
-        if (id !== "") {
-          createNewResearch();
-          form.setValue("topic", values.topic);
-        }
-        setQuestion(values.topic);
-        await askQuestions();
+        if (id) createNewResearch();
+
+        await runScrapingPipeline(values.topic);
       } finally {
         setIsThinking(false);
         accurateTimerStop();
       }
+    } else {
+      const { setOpenSetting } = useGlobalStore.getState();
+      setOpenSetting(true);
     }
   }
 

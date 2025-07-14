@@ -497,3 +497,44 @@ class DeepResearch {
 }
 
 export default DeepResearch;
+
+// Prompt to generate scraping search queries
+export function generateScraperQueriesPrompt(topic: string) {
+  return `
+    You are an expert in finding negative information online.
+    Given the topic "${topic}", generate a list of 10 to 15 diverse and effective Google search queries to find real negative customer reviews.
+    Focus on queries that would uncover complaints, scam accusations, and bad experiences.
+
+    Rules:
+    - Generate a variety of queries. Include terms like "отзывы мошенники", "обман", "негативный опыт", "жалобы", "развод", "проблемы с".
+    - Do NOT number the list.
+    - Each query must be on a new line.
+
+    Example for topic "MegaInvest":
+    MegaInvest отзывы обман
+    MegaInvest негативные мнения клиентов
+    жалобы на MegaInvest
+    MegaInvest мошенники
+  `;
+}
+
+// Prompt to extract review data as JSON
+export function extractReviewsPrompt(topic: string, content: string) {
+  return `
+    You are a precise data extraction bot. Your ONLY task is to find and extract ALL negative reviews about "${topic}" from the provided text content.
+
+    Follow these rules STRICTLY:
+    1.  Analyze the provided <content> and identify every distinct negative review.
+    2.  For each negative review, extract the following fields: 'name', 'review', 'city', 'date'.
+    3.  If a value for 'name', 'city', or 'date' is not found, use an empty string "".
+    4.  The 'review' field MUST contain the full, original, and unchanged text of the negative review.
+    5.  Your output MUST be a single, valid JSON object with one key: "reviews". The value should be an array of the extracted review objects.
+    6.  If no negative reviews are found in the content, return: {"reviews": []}
+    7.  DO NOT include positive or neutral reviews.
+    8.  DO NOT add any text, explanations, or markdown formatting like \`\`\`json. Your entire response must be ONLY the JSON object, starting with { and ending with }.
+
+    <content>
+    ${content}
+    </content>
+  `;
+}

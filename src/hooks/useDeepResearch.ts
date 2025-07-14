@@ -25,6 +25,10 @@ import {
   writeFinalReportPrompt,
   getSERPQuerySchema,
 } from "@/utils/deep-research/prompts";
+import {
+  generateScraperQueriesPrompt,
+  extractReviewsPrompt,
+} from "@/utils/deep-research";
 import { isNetworkingModel } from "@/utils/model";
 import { ThinkTagStreamProcessor, removeJsonMarkdown } from "@/utils/text";
 import { parseError } from "@/utils/error";
@@ -432,6 +436,125 @@ function useDeepResearch() {
     );
   }
 
+  async function runScrapingPipeline(topic: string) {
+    setStatus(t("research.common.thinking"));
+    const { thinkingModel, networkingModel } = getModel();
+    const {
+      update,
+      setQuestion,
+      updateFinalReport,
+      setTitle,
+      setSources,
+    } = useTaskStore.getState();
+
+    update([]);
+    setTitle(`Scraping reviews for: ${topic}`);
+    setQuestion(topic);
+    updateFinalReport("Stage 1: Generating search queries...");
+
+    try {
+      const queryGenerationResult = await streamText({
+        model: createModelProvider(thinkingModel),
+        prompt: generateScraperQueriesPrompt(topic),
+      });
+
+      const queriesText = await queryGenerationResult.text;
+      const searchQueries = queriesText
+        .split("\n")
+        .filter((q) => q.trim() !== "");
+
+      if (searchQueries.length === 0) {
+        throw new Error("Failed to generate search queries.");
+      }
+
+      const searchTasks: SearchTask[] = searchQueries.map((q) => ({
+        query: q,
+        state: "unprocessed",
+        learning: "Waiting for search...",
+        researchGoal: `Find pages with negative reviews for ${topic}.`,
+        sources: [],
+      }));
+      update(searchTasks);
+
+      setStatus(t("research.common.research"));
+      updateFinalReport("Stage 2: Searching Google and processing pages...");
+
+      const searchToolEnabledModel = createModelProvider(networkingModel, {
+        useSearchGrounding: true,
+      });
+
+      let allReviews: any[] = [];
+      const plimit = Plimit(3);
+
+      const processingPromises = searchTasks.map((task) =>
+        plimit(async () => {
+          taskStore.updateTask(task.query, { state: "processing" });
+
+          const extractionResult = await streamText({
+            model: searchToolEnabledModel,
+            prompt: extractReviewsPrompt(
+              task.query,
+              `Search results for the query: "${task.query}"`
+            ),
+          });
+
+          const sources: Source[] = [];
+          for await (const part of extractionResult.fullStream) {
+            if (part.type === "source") {
+              sources.push(part.source);
+            }
+          }
+
+          const jsonText = await extractionResult.text;
+          try {
+            const extractedData = JSON.parse(jsonText.trim());
+            if (extractedData.reviews && extractedData.reviews.length > 0) {
+              allReviews = allReviews.concat(extractedData.reviews);
+              taskStore.updateTask(task.query, {
+                state: "completed",
+                learning: `Extracted ${extractedData.reviews.length} reviews.`,
+                sources,
+              });
+            } else {
+              taskStore.updateTask(task.query, {
+                state: "completed",
+                learning: "No negative reviews found.",
+                sources,
+              });
+            }
+          } catch {
+            console.error("JSON Parse Error for query:", task.query, jsonText);
+            taskStore.updateTask(task.query, {
+              state: "completed",
+              learning: "Failed to parse JSON response.",
+            });
+          }
+        })
+      );
+
+      await Promise.all(processingPromises);
+
+      setStatus(t("research.common.writing"));
+      updateFinalReport("Stage 3: Aggregating results...");
+
+      const finalResult = {
+        reviews: allReviews,
+        total_count: allReviews.length,
+        search_topic: topic,
+      };
+
+      const finalJsonString = JSON.stringify(finalResult, null, 2);
+      updateFinalReport(finalJsonString);
+
+      setSources(searchTasks.flatMap((task) => task.sources));
+      setStatus("Completed");
+    } catch (error) {
+      handleError(error);
+      setStatus("Error");
+      updateFinalReport(`An error occurred: ${parseError(error)}`);
+    }
+  }
+
   async function reviewSearchResult() {
     const { reportPlan, tasks, suggestion } = useTaskStore.getState();
     const { thinkingModel } = getModel();
@@ -650,6 +773,7 @@ function useDeepResearch() {
     askQuestions,
     writeReportPlan,
     runSearchTask,
+    runScrapingPipeline,
     reviewSearchResult,
     writeFinalReport,
   };
